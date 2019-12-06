@@ -11,6 +11,7 @@ DEPS_DIR           := $(CORE_DIR)/deps
 LIBRETRO_COMM_DIR  := $(CORE_DIR)/libretro-common
 BASE_DIR       	 := $(CORE_DIR)/..
 AVFORMAT_DIR   	 := $(BASE_DIR)/libavformat
+AVFILTER_DIR   	 := $(BASE_DIR)/libavfilter
 AVCODEC_DIR    	 := $(BASE_DIR)/libavcodec
 AVUTIL_DIR     	 := $(BASE_DIR)/libavutil
 SWSCALE_DIR    	 := $(BASE_DIR)/libswscale
@@ -26,6 +27,7 @@ ifeq ($(LIBRETRO_SWITCH), 1)
 DEFINES += -DLIBRETRO_SWITCH=1
 INTERNAL_LIBAVCODEC    = 1
 INTERNAL_LIBAVFORMAT   = 1
+INTERNAL_LIBAVFILTER   = 1
 INTERNAL_LIBAVUTIL     = 1
 INTERNAL_LIBSWRESAMPLE = 1
 INTERNAL_LIBSWSCALE    = 1
@@ -78,6 +80,20 @@ else ifneq (,$(findstring osx,$(platform)))
    CFLAGS += $(shell pkg-config libavformat --cflags)
 else ifneq (,$(findstring win,$(platform)))
    LIBS += -lavformat
+endif
+endif
+
+ifeq ($(INTERNAL_LIBAVFILTER),1)
+	BAKE_IN_FFMPEG=1
+else
+ifneq (,$(findstring unix,$(platform)))
+   LIBS += $(shell pkg-config libavfilter --libs)
+   CFLAGS += $(shell pkg-config libavfilter --cflags)
+else ifneq (,$(findstring osx,$(platform)))
+   LIBS += $(shell pkg-config libavfilter --libs)
+   CFLAGS += $(shell pkg-config libavfilter --cflags)
+else ifneq (,$(findstring win,$(platform)))
+   LIBS += -libavfilter
 endif
 endif
 

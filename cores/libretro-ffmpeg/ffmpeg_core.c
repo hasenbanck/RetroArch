@@ -17,6 +17,8 @@ extern "C" {
 #endif
 
 #include <libavformat/avformat.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
 #include <libavutil/error.h>
@@ -96,6 +98,9 @@ static bool force_sw_decoder;
 static bool hw_decoding_enabled;
 #endif
 
+AVFilterContext *buffersink_ctx;
+AVFilterContext *buffersrc_ctx;
+AVFilterGraph *filter_graph;
 
 #define MAX_STREAMS 8
 static AVCodecContext *actx[MAX_STREAMS];
@@ -223,11 +228,6 @@ void CORE_PREFIX(retro_init)(void)
    reset_triggered = false;
 
    av_register_all();
-#if 0
-   /* FIXME: Occasionally crashes inside libavdevice
-    * for some odd reason on reentrancy. Likely a libavdevice bug. */
-   avdevice_register_all();
-#endif
 }
 
 void CORE_PREFIX(retro_deinit)(void)
@@ -822,6 +822,93 @@ void CORE_PREFIX(retro_run)(void)
       CORE_PREFIX(audio_batch_cb)(audio_buffer, to_read_frames);
 }
 
+static int init_filters(AVCodecContext *ctx, enum AVPixelFormat pix_fmt)
+{
+   char args[512];
+   int ret = 0;
+   const AVFilter *buffersrc  = avfilter_get_by_name("buffer");
+   const AVFilter *buffersink = avfilter_get_by_name("buffersink");
+   AVFilterInOut *outputs = avfilter_inout_alloc();
+   AVFilterInOut *inputs  = avfilter_inout_alloc();
+   AVRational time_base = fctx->streams[video_stream_index]->time_base;
+   // TODO: LE = AV_PIX_FMT_ARGB, BE = AV_PIX_FMT_BGRA
+   enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_RGB32, AV_PIX_FMT_NONE };
+   //const char *filters_descr = "hwdownload,format=pix_fmts=rgb32";
+   const char *filters_descr = "format=pix_fmts=rgb32";
+   
+   filter_graph = avfilter_graph_alloc();
+
+   if (!outputs || !inputs || !filter_graph)
+   {
+      ret = AVERROR(ENOMEM);
+      log_cb(RETRO_LOG_ERROR, "[FFMPEG] Failed to alloc filter graph: %s\n", av_err2str(ret));
+      goto end;
+   }
+
+   /* buffer video source: the decoded frames from the decoder will be inserted here. */
+   snprintf(args, sizeof(args),
+         "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
+         ctx->width, ctx->height, pix_fmt,
+         time_base.num, time_base.den,
+         ctx->sample_aspect_ratio.num, ctx->sample_aspect_ratio.den);
+
+   ret = avfilter_graph_create_filter(&buffersrc_ctx, buffersrc, "in",
+                                    args, NULL, filter_graph);
+   if (ret < 0)
+   {
+      log_cb(RETRO_LOG_ERROR, "[FFMPEG] Cannot create buffer source: %s\n", av_err2str(ret));
+      goto end;
+   }
+
+   // TODO HW specific
+   // NOT WORKING
+   //buffersrc_ctx->hw_device_ctx = ctx->hw_device_ctx;
+   
+   /* buffer video sink: to terminate the filter chain. */
+   ret = avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out",
+                                    NULL, NULL, filter_graph);
+   if (ret < 0)
+   {
+      log_cb(RETRO_LOG_ERROR, "[FFMPEG] Cannot create buffer sink: %s\n", av_err2str(ret));
+      goto end;
+   }
+   ret = av_opt_set_int_list(buffersink_ctx, "pix_fmts", pix_fmts,
+                           AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
+   if (ret < 0)
+   {
+      log_cb(RETRO_LOG_ERROR, "[FFMPEG] Cannot set output pixel format: %s\n", av_err2str(ret));
+      goto end;
+   }
+
+    outputs->name       = av_strdup("in");
+    outputs->filter_ctx = buffersrc_ctx;
+    outputs->pad_idx    = 0;
+    outputs->next       = NULL;
+
+   inputs->name       = av_strdup("out");
+   inputs->filter_ctx = buffersink_ctx;
+   inputs->pad_idx    = 0;
+   inputs->next       = NULL;
+
+   if ((ret = avfilter_graph_parse_ptr(filter_graph, filters_descr,
+                                 &inputs, &outputs, NULL)) < 0)
+   {
+      log_cb(RETRO_LOG_ERROR, "[FFMPEG] Cannot parse filter graph: %s\n", av_err2str(ret));
+      goto end;
+   }
+
+   if ((ret = avfilter_graph_config(filter_graph, NULL)) < 0)
+   {
+      log_cb(RETRO_LOG_ERROR, "[FFMPEG] Cannot configure filter graph: %s\n", av_err2str(ret));
+      goto end;
+   }
+
+end:
+   avfilter_inout_free(&inputs);
+   avfilter_inout_free(&outputs);
+   return ret;
+}
+
 #if LIBAVUTIL_VERSION_MAJOR > 55
 /* Try to initialize a specific HW decoder defined by type */
 static enum AVPixelFormat init_hw_decoder(struct AVCodecContext *ctx,
@@ -913,6 +1000,7 @@ static enum AVPixelFormat get_format(AVCodecContext *ctx,
          return pix_fmt;
       }
 
+   /* 
    if (!force_sw_decoder)
    {
       if (hw_decoder == AV_HWDEVICE_TYPE_NONE)
@@ -922,10 +1010,11 @@ static enum AVPixelFormat get_format(AVCodecContext *ctx,
       else
          pix_fmt = init_hw_decoder(ctx, pix_fmts, hw_decoder);
    }
+   */
 
    /* Fallback to SW rendering */
    if (pix_fmt == AV_PIX_FMT_NONE)
-   { 
+   {
       log_cb(RETRO_LOG_INFO, "[FFMPEG] Using SW decoding.\n");
 
       ctx->thread_type = FF_THREAD_FRAME;
@@ -936,6 +1025,15 @@ static enum AVPixelFormat get_format(AVCodecContext *ctx,
    }
    else
       hw_decoding_enabled = true;
+
+   if (pix_fmt != AV_PIX_FMT_NONE)
+   {
+      if (init_filters(ctx, pix_fmt) < 0)
+      {
+         log_cb(RETRO_LOG_ERROR, "[FFMPEG] Failed to initialize filter.\n");
+         pix_fmt = AV_PIX_FMT_NONE;
+      }
+   }
 
    return pix_fmt;
 }
@@ -948,7 +1046,7 @@ static bool open_codec(AVCodecContext **ctx, unsigned index)
    AVCodec *codec = avcodec_find_decoder(fctx->streams[index]->codec->codec_id);
    if (!codec)
    {
-      log_cb(RETRO_LOG_ERROR, "[FFMPEG] Couldn't find suitable decoder\n");
+      log_cb(RETRO_LOG_ERROR, "[FFMPEG] Couldn't find suitable decoder.\n");
       return false;
    }
 
@@ -1243,35 +1341,26 @@ static void render_ass_img(AVFrame *conv_frame, ASS_Image *img)
 
 
 #ifdef HAVE_SSA
-static void decode_video(AVCodecContext *ctx, AVPacket *pkt, AVFrame *conv_frame, size_t frame_size, struct SwsContext  **sws, ASS_Track *ass_track_active)
+static int decode_video(AVCodecContext *ctx, AVPacket *pkt, AVFrame *frame, AVFrame *conv_frame, size_t frame_size, struct SwsContext  **sws, ASS_Track *ass_track_active)
 #else
-static void decode_video(AVCodecContext *ctx, AVPacket *pkt, AVFrame *conv_frame, size_t frame_size, struct SwsContext  **sws)
+static int decode_video(AVCodecContext *ctx, AVPacket *pkt, AVFrame *frame, AVFrame *conv_frame, size_t frame_size, struct SwsContext  **sws)
 #endif
 {
-   int ret;
-   AVFrame *frame = NULL;
-   AVFrame *sw_frame = NULL;
-   AVFrame *tmp_frame = NULL;
+   int ret = 0;
 
+   // TODO: has problems encoding because of short lived buffer
    if ((ret = avcodec_send_packet(ctx, pkt)) < 0)
    {
       log_cb(RETRO_LOG_ERROR, "[FFMPEG] Can't decode video packet: %s\n", av_err2str(ret));
-      return;
+      return -1;
    }
 
    while(true)
    {
-      if (!(frame = av_frame_alloc()) || !(sw_frame = av_frame_alloc()))
-      {
-         log_cb(RETRO_LOG_ERROR, "[FFMPEG] Can not alloc frames\n");
-         return;
-      }
-
       ret = avcodec_receive_frame(ctx, frame);
       if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
       {
-         av_frame_free(&frame);
-         av_frame_free(&sw_frame);
+         ret = 0;
          break;
       }
       else if (ret < 0)
@@ -1280,94 +1369,92 @@ static void decode_video(AVCodecContext *ctx, AVPacket *pkt, AVFrame *conv_frame
          goto fail;
       }
 
-#if LIBAVUTIL_VERSION_MAJOR > 55
-      if (hw_decoding_enabled)
+      // TODO: Can we use a filter in the filter chain?
+      // We need to set the colorspace filter!
+
+      /* push the decoded frame into the filtergraph */
+      if ((ret = av_buffersrc_add_frame_flags(buffersrc_ctx, frame, AV_BUFFERSRC_FLAG_KEEP_REF)) < 0)
       {
-         /* Copy data from VRAM to RAM */
-         if ((ret = av_hwframe_transfer_data(sw_frame, frame, 0)) < 0)
-         {
-               log_cb(RETRO_LOG_ERROR, "[FFMPEG] Error transferring the data to system memory: %s\n", av_err2str(ret));
-               goto fail;
-         }
-         tmp_frame = sw_frame;
-      }
-      else
-#endif
-         tmp_frame = frame;
-
-      *sws = sws_getCachedContext(*sws,
-            media.width, media.height, tmp_frame->format,
-            media.width, media.height, PIX_FMT_RGB32,
-            SWS_BICUBIC, NULL, NULL, NULL);
-
-      set_colorspace(*sws, media.width, media.height,
-           av_frame_get_colorspace(tmp_frame), av_frame_get_color_range(tmp_frame));
-
-      if ((ret = sws_scale(*sws, (const uint8_t * const*)tmp_frame->data,
-            tmp_frame->linesize, 0, media.height,
-            conv_frame->data, conv_frame->linesize)) < 0)
-      {
-         log_cb(RETRO_LOG_ERROR, "[FFMPEG] Error while scaling image: %s\n", av_err2str(ret));
+         log_cb(RETRO_LOG_ERROR, "[FFMPEG] Cannot feed the filtergraph: %s\n", av_err2str(ret));
          goto fail;
       }
 
-      size_t decoded_size;
-      int64_t pts       = av_frame_get_best_effort_timestamp(frame);
-      double video_time = pts * av_q2d(fctx->streams[video_stream_index]->time_base);
-
-#ifdef HAVE_SSA
-      if (ass_render && ass_track_active)
+      /* pull filtered frames from the filtergraph into fifo */
+      while (true)
       {
-         int change     = 0;
-         ASS_Image *img = ass_render_frame(ass_render, ass_track_active,
-               1000 * video_time, &change);
-
-         /* Do it on CPU for now.
-            * We're in a thread anyways, so shouldn't really matter. */
-         render_ass_img(conv_frame, img);
-      }
-#endif
-
-      decoded_size = frame_size + sizeof(pts);
-      slock_lock(fifo_lock);
-
-      while (!decode_thread_dead  && (video_decode_fifo != NULL)
-            && fifo_write_avail(video_decode_fifo) < decoded_size)
-      {
-         if (!main_sleeping)
-            scond_wait(fifo_decode_cond, fifo_lock);
-         else
+         ret = av_buffersink_get_frame(buffersink_ctx, conv_frame);
+         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
          {
-            fifo_clear(video_decode_fifo);
+            ret = 0;
             break;
          }
+         if (ret < 0)
+         {
+            log_cb(RETRO_LOG_ERROR, "[FFMPEG] Error while getting frame from sink: %s\n", av_err2str(ret));
+            goto fail;
+         }
+
+         size_t decoded_size;
+         // Not needed anymore, I guess
+         //int64_t pts       = av_frame_get_best_effort_timestamp(conv_frame);
+         int64_t pts       = conv_frame->best_effort_timestamp;
+         double video_time = pts * av_q2d(fctx->streams[video_stream_index]->time_base);
+
+   #ifdef HAVE_SSA
+         if (ass_render && ass_track_active)
+         {
+            int change     = 0;
+            ASS_Image *img = ass_render_frame(ass_render, ass_track_active,
+                  1000 * video_time, &change);
+
+            /* Do it on CPU for now.
+             * We're in a thread anyways, so shouldn't really matter. */
+            render_ass_img(conv_frame, img);
+         }
+   #endif
+
+         decoded_size = frame_size + sizeof(pts);
+         slock_lock(fifo_lock);
+
+         while (!decode_thread_dead  && (video_decode_fifo != NULL)
+               && fifo_write_avail(video_decode_fifo) < decoded_size)
+         {
+            if (!main_sleeping)
+               scond_wait(fifo_decode_cond, fifo_lock);
+            else
+            {
+               fifo_clear(video_decode_fifo);
+               break;
+            }
+         }
+
+         decode_last_video_time = video_time;
+         if (!decode_thread_dead)
+         {
+            int stride;
+            unsigned y;
+            const uint8_t *src = NULL;
+
+            fifo_write(video_decode_fifo, &pts, sizeof(pts));
+            src    = conv_frame->data[0];
+            stride = conv_frame->linesize[0];
+
+            for (y = 0; y < media.height; y++, src += stride)
+               fifo_write(video_decode_fifo, src, media.width * sizeof(uint32_t));
+         }
+         scond_signal(fifo_cond);
+         slock_unlock(fifo_lock);
+
+         av_frame_unref(conv_frame);
       }
-
-      decode_last_video_time = video_time;
-      if (!decode_thread_dead)
-      {
-         int stride;
-         unsigned y;
-         const uint8_t *src = NULL;
-
-         fifo_write(video_decode_fifo, &pts, sizeof(pts));
-         src    = conv_frame->data[0];
-         stride = conv_frame->linesize[0];
-
-         for (y = 0; y < media.height; y++, src += stride)
-            fifo_write(video_decode_fifo, src, media.width * sizeof(uint32_t));
-      }
-      scond_signal(fifo_cond);
-      slock_unlock(fifo_lock);
 
    fail:
-      av_frame_free(&frame);
-      av_frame_free(&sw_frame);
+      av_frame_unref(frame);
       if (ret < 0)
          break;
    }
 
-   return;
+   return ret;
 }
 
 static int16_t *decode_audio(AVCodecContext *ctx, AVPacket *pkt,
@@ -1467,6 +1554,7 @@ static void decode_thread_seek(double time)
 static void decode_thread(void *data)
 {
    unsigned i;
+   int ret;
    struct SwrContext *swr[audio_streams_num];
    struct SwsContext *sws  = NULL;
    AVFrame *aud_frame      = NULL;
@@ -1475,7 +1563,7 @@ static void decode_thread(void *data)
    int16_t *audio_buffer   = NULL;
    size_t audio_buffer_cap = 0;
    AVFrame *conv_frame     = NULL;
-
+   AVFrame *frame          = NULL;
 
    (void)data;
 
@@ -1497,6 +1585,7 @@ static void decode_thread(void *data)
    if (video_stream_index >= 0)
    {
       frame_size = avpicture_get_size(PIX_FMT_RGB32, media.width, media.height);
+      frame = av_frame_alloc();
       conv_frame = av_frame_alloc();
       conv_frame_buf = av_malloc(frame_size);
       avpicture_fill((AVPicture*)conv_frame, (const uint8_t*)conv_frame_buf,
@@ -1554,11 +1643,17 @@ static void decode_thread(void *data)
       slock_unlock(decode_thread_lock);
 
       if (pkt.stream_index == video_stream_index)
+      {
       #ifdef HAVE_SSA
-         decode_video(vctx, &pkt, conv_frame, frame_size, &sws, ass_track_active);
+         ret = decode_video(vctx, &pkt, frame, conv_frame, frame_size, &sws, ass_track_active);
       #else
-         decode_video(vctx, &pkt, conv_frame, frame_size, &sws);
+         ret = decode_video(vctx, &pkt, frame, conv_frame, frame_size, &sws);
       #endif
+         if (ret < 0)
+         {
+            break;
+         }
+      }
       else if (pkt.stream_index == audio_stream && actx_active)
       {
          audio_buffer = decode_audio(actx_active, &pkt, aud_frame,
@@ -1605,6 +1700,7 @@ static void decode_thread(void *data)
       av_buffer_unref(&vctx->hw_device_ctx);
 
    av_frame_free(&aud_frame);
+   av_frame_free(&frame);
    av_frame_free(&conv_frame);
    av_freep(&conv_frame_buf);
    av_freep(&audio_buffer);

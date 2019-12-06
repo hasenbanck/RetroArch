@@ -388,16 +388,16 @@ check_enabled THREADS FFMPEG FFmpeg 'Threads are' false
 
 if [ "$HAVE_FFMPEG" != 'no' ]; then
    check_val '' AVCODEC -lavcodec '' libavcodec 57 '' false
+   check_val '' AVFILTER -lavfilter '' libavfilter 6 '' false
    check_val '' AVFORMAT -lavformat '' libavformat 57 '' false
-   check_val '' AVDEVICE -lavdevice '' libavdevice 57 '' false
-   check_val '' SWRESAMPLE -lswresample '' libswresample 2 '' false
    check_val '' AVUTIL -lavutil '' libavutil 55 '' false
    check_val '' SWSCALE -lswscale '' libswscale 4 '' false
+   check_val '' SWRESAMPLE -lswresample '' libswresample 2 '' false
 
    check_header AV_CHANNEL_LAYOUT libavutil/channel_layout.h
 
    HAVE_FFMPEG='yes'
-   if [ "$HAVE_AVCODEC" = 'no' ] || [ "$HAVE_SWRESAMPLE" = 'no' ] || [ "$HAVE_AVFORMAT" = 'no' ] || [ "$HAVE_AVUTIL" = 'no' ] || [ "$HAVE_SWSCALE" = 'no' ]; then
+   if [ "$HAVE_AVCODEC" = 'no' ] || [ "$HAVE_SWRESAMPLE" = 'no' ] || [ "$HAVE_AVFORMAT" = 'no' ] || [ "$HAVE_AVFILTER" = 'no' ] || [ "$HAVE_AVUTIL" = 'no' ] || [ "$HAVE_SWSCALE" = 'no' ]; then
       HAVE_FFMPEG='no'
       die : 'Notice: FFmpeg built-in support disabled due to missing or unsuitable packages.'
    fi

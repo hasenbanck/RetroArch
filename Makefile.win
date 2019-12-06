@@ -85,6 +85,7 @@ AVCODEC_LIBS     := -lavcodec
 AVUTIL_LIBS      := -lavutil
 SWSCALE_LIBS     := -lswscale
 AVFORMAT_LIBS    := -lavformat
+AVFILTER_LIBS    := -lavfilter
 SWRESAMPLE_LIBS  := -lswresample
 FFMPEG_LIBS      := -lws2_32 -lz
 endif

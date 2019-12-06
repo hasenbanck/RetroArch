@@ -1439,6 +1439,12 @@ endif
 LIBAVFORMAT_SOURCE += $(filter-out $(AVFORMAT_BLACKLIST),$(wildcard $(AVFORMAT_DIR)/*.c))
 endif
 
+#libavfilter
+ifeq ($(INTERNAL_LIBAVFILTER),1)
+DEFINES += -DHAVE_AVFILTER_H
+LIBAVFORMAT_SOURCE += $(wildcard $(AVFILTER_DIR)/*.c)
+endif
+
 #libavcodec
 ifeq ($(INTERNAL_LIBAVCODEC),1)
 DEFINES += -DHAVE_AVCODEC_H \
