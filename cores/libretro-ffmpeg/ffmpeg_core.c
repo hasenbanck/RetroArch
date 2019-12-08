@@ -151,20 +151,6 @@ static double decode_last_audio_time;
 /* Thread pool for sws conversion*/
 #define MAX_THREADS 32
 static uint64_t cpu_num;
-static tpool_t *tpool;
-
-struct sws_worker_args {
-   struct SwsContext *c;
-   uint8_t **srcSlice;
-   const int *srcStride;
-   int srcSliceY;
-   int srcSliceH;
-   uint8_t **dst;
-   const int *dstStride;
-};
-typedef struct sws_worker_args sws_worker_args_t;
-
-static sws_worker_args_t *sws_worker_args[MAX_THREADS];
 
 static uint32_t *video_frame_temp_buffer;
 
@@ -1290,18 +1276,6 @@ static void render_ass_img(AVFrame *conv_frame, ASS_Image *img)
 #endif
 
 
-static void sws_worker(void *args)
-{
-   int ret;
-   sws_worker_args_t *work = args;
-   if ((ret = sws_scale(work->c, (const uint8_t *const *)work->srcSlice,
-        work->srcStride, work->srcSliceY, work->srcSliceH,
-        (uint8_t * const*)work->dst, work->dstStride)) < 0)
-   {
-      log_cb(RETRO_LOG_ERROR, "[FFMPEG] Error while scaling image: %s\n", av_err2str(ret));
-   }
-}
-
 #ifdef HAVE_SSA
 static void decode_video(AVCodecContext *ctx, AVPacket *pkt, AVFrame *conv_frame, size_t frame_size, struct SwsContext  **sws, ASS_Track *ass_track_active)
 #else
@@ -1362,13 +1336,10 @@ static void decode_video(AVCodecContext *ctx, AVPacket *pkt, AVFrame *conv_frame
            av_frame_get_colorspace(tmp_frame),
            av_frame_get_color_range(tmp_frame));
 
-      int i, j, slice_h, slice_start, slice_end = 0;
-
       cpu_num = 2;
+      int i, j, slice_h, slice_start, slice_end = 0;
       for (i = 0; i < cpu_num; i++) 
       {
-         /* https://github.com/FFmpeg/FFmpeg/blob/master/libavfilter/vf_scale.c */
-         /* Scale seems not to be compatible for slicing and converting between multiple color encodings */
          uint8_t *in[4];
          slice_start = slice_end;
          slice_end   = (media.height * (i+1)) / cpu_num;
@@ -1378,21 +1349,18 @@ static void decode_video(AVCodecContext *ctx, AVPacket *pkt, AVFrame *conv_frame
             in[j] = tmp_frame->data[j] + (slice_start * tmp_frame->linesize[j]);
          }
 
-         sws_worker_args[i]->c = sws_getCachedContext(sws_worker_args[i]->c,
+         *sws = sws_getCachedContext(*sws,
             media.width, media.height, tmp_frame->format,
             media.width, media.height, PIX_FMT_RGB32,
             SWS_BICUBIC, NULL, NULL, NULL);
 
-         sws_worker_args[i]->srcSlice = in;
-         sws_worker_args[i]->srcStride = tmp_frame->linesize;
-         sws_worker_args[i]->srcSliceY = slice_start;
-         sws_worker_args[i]->srcSliceH = slice_h;
-         sws_worker_args[i]->dst = conv_frame->data;
-         sws_worker_args[i]->dstStride = conv_frame->linesize;
-
-         tpool_add_work(tpool, sws_worker, sws_worker_args[i]);
+         if ((ret = sws_scale(*sws, (const uint8_t *const *)in,
+               tmp_frame->linesize, slice_start, slice_h,
+               (uint8_t * const*)conv_frame->data, conv_frame->linesize)) < 0)
+         {
+            log_cb(RETRO_LOG_ERROR, "[FFMPEG] Error while scaling image: %s\n", av_err2str(ret));
+         }
       }
-      tpool_wait(tpool);
 
       size_t decoded_size;
       int64_t pts = frame->best_effort_timestamp;
@@ -1833,16 +1801,6 @@ void CORE_PREFIX(retro_unload_game)(void)
    video_decode_fifo = NULL;
    audio_decode_fifo = NULL;
 
-   for (i = 0; i < MAX_THREADS; i++)
-   {
-      if (sws_worker_args[i] && sws_worker_args[i]->c)
-         sws_freeContext(sws_worker_args[i]->c);
-      if (sws_worker_args[i])
-         free(sws_worker_args[i]);
-   }
-
-   tpool_destroy(tpool);
-
    decode_last_video_time = 0.0;
    decode_last_audio_time = 0.0;
 
@@ -2002,22 +1960,6 @@ bool CORE_PREFIX(retro_load_game)(const struct retro_game_info *info)
    slock_unlock(fifo_lock);
 
    decode_thread_handle = sthread_create(decode_thread, NULL);
-
-   // TODO get CPU count and test me
-   cpu_num = 16;
-   if (cpu_num > MAX_THREADS)
-   {
-      cpu_num = 32;
-   }
-   
-   tpool = tpool_create(cpu_num);
-   
-   
-   for (int i = 0; i < cpu_num; i++)
-   {
-      sws_worker_args[i] = malloc(sizeof(sws_worker_args_t));
-      sws_worker_args[i]->c = sws_alloc_context();
-   }
 
    video_frame_temp_buffer = (uint32_t*)
       av_malloc(media.width * media.height * sizeof(uint32_t));
