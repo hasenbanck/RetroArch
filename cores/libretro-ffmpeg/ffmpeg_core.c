@@ -149,6 +149,7 @@ static double decode_last_video_time;
 static double decode_last_audio_time;
 
 /* Thread pool for sws conversion*/
+// TODO set CPU num
 #define MAX_THREADS 32
 static uint64_t cpu_num;
 
@@ -1336,16 +1337,20 @@ static void decode_video(AVCodecContext *ctx, AVPacket *pkt, AVFrame *conv_frame
            av_frame_get_colorspace(tmp_frame),
            av_frame_get_color_range(tmp_frame));
 
-      cpu_num = 2;
-      int i, j, slice_h, slice_start, slice_end = 0;
-      for (i = 0; i < cpu_num; i++) 
-      {
-         uint8_t *in[4];
-         slice_start = slice_end;
-         slice_end   = (media.height * (i+1)) / cpu_num;
-         slice_h     = slice_end - slice_start;
+      // TODO: Segfaults right now.
+      int slice_num = 2;
+      int slice_start = 0;
+      int slice_height = ((((int) media.height) / slice_num) / 4) * 4;
+      int rest = ((int) media.height) - (slice_height * slice_num);
+      uint8_t *in[8];
 
-         for (j=0; j<4; j++) {
+      for (int i = 0; i < slice_num; i++)
+      {
+         if (i == (slice_num-1))
+            slice_height += rest;
+
+         for (int j = 0; j<8; j++)
+         {
             in[j] = tmp_frame->data[j] + (slice_start * tmp_frame->linesize[j]);
          }
 
@@ -1355,11 +1360,13 @@ static void decode_video(AVCodecContext *ctx, AVPacket *pkt, AVFrame *conv_frame
             SWS_BICUBIC, NULL, NULL, NULL);
 
          if ((ret = sws_scale(*sws, (const uint8_t *const *)in,
-               tmp_frame->linesize, slice_start, slice_h,
+               tmp_frame->linesize, slice_start, slice_height,
                (uint8_t * const*)conv_frame->data, conv_frame->linesize)) < 0)
          {
             log_cb(RETRO_LOG_ERROR, "[FFMPEG] Error while scaling image: %s\n", av_err2str(ret));
          }
+
+         slice_start += slice_height;
       }
 
       size_t decoded_size;
