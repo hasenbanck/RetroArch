@@ -831,7 +831,7 @@ static enum AVPixelFormat init_hw_decoder(struct AVCodecContext *ctx,
                                     const enum AVHWDeviceType type,
                                     const enum AVPixelFormat *pix_fmts)
 {
-   int ret;
+   int ret = 0;
    enum AVPixelFormat decoder_pix_fmt = AV_PIX_FMT_NONE;
    struct AVCodec *codec = avcodec_find_decoder(fctx->streams[video_stream_index]->codec->codec_id);
 
@@ -896,7 +896,7 @@ exit:
 static enum AVPixelFormat auto_hw_decoder(AVCodecContext *ctx,
                                     const enum AVPixelFormat *pix_fmts)
 {
-   int ret;
+   int ret = 0;
    enum AVPixelFormat decoder_pix_fmt = AV_PIX_FMT_NONE;
    enum AVHWDeviceType type = AV_HWDEVICE_TYPE_NONE;
 
@@ -970,7 +970,7 @@ static enum AVPixelFormat get_format(AVCodecContext *ctx,
 
 static bool open_codec(AVCodecContext **ctx, enum AVMediaType type, unsigned index)
 {
-   int ret;
+   int ret = 0;
 
    AVCodec *codec = avcodec_find_decoder(fctx->streams[index]->codec->codec_id);
    if (!codec)
@@ -1283,7 +1283,7 @@ static void decode_video(AVCodecContext *ctx, AVPacket *pkt, AVFrame *conv_frame
 static void decode_video(AVCodecContext *ctx, AVPacket *pkt, AVFrame *conv_frame, size_t frame_size, struct SwsContext  **sws)
 #endif
 {
-   int ret;
+   int ret = 0;
    AVFrame *frame = NULL;
    AVFrame *sw_frame = NULL;
    AVFrame *tmp_frame = NULL;
@@ -1327,7 +1327,7 @@ static void decode_video(AVCodecContext *ctx, AVPacket *pkt, AVFrame *conv_frame
       else
 #endif
          tmp_frame = frame;
-
+/*
       *sws = sws_getCachedContext(*sws,
             media.width, media.height, tmp_frame->format,
             media.width, media.height, PIX_FMT_RGB32,
@@ -1336,13 +1336,13 @@ static void decode_video(AVCodecContext *ctx, AVPacket *pkt, AVFrame *conv_frame
       set_colorspace(*sws, media.width, media.height,
            av_frame_get_colorspace(tmp_frame),
            av_frame_get_color_range(tmp_frame));
-
+*/
       // TODO: Segfaults right now.
       int slice_num = 2;
       int slice_start = 0;
       int slice_height = ((((int) media.height) / slice_num) / 4) * 4;
       int rest = ((int) media.height) - (slice_height * slice_num);
-      uint8_t *in[8];
+      uint8_t *in[8] = {0,0,0,0,0,0,0,0};
 
       for (int i = 0; i < slice_num; i++)
       {
@@ -1354,16 +1354,19 @@ static void decode_video(AVCodecContext *ctx, AVPacket *pkt, AVFrame *conv_frame
             in[j] = tmp_frame->data[j] + (slice_start * tmp_frame->linesize[j]);
          }
 
+         // TODO we need to free the sws context at the end of the movie
          *sws = sws_getCachedContext(*sws,
             media.width, media.height, tmp_frame->format,
             media.width, media.height, PIX_FMT_RGB32,
             SWS_BICUBIC, NULL, NULL, NULL);
 
-         if ((ret = sws_scale(*sws, (const uint8_t *const *)in,
-               tmp_frame->linesize, slice_start, slice_height,
-               (uint8_t * const*)conv_frame->data, conv_frame->linesize)) < 0)
-         {
-            log_cb(RETRO_LOG_ERROR, "[FFMPEG] Error while scaling image: %s\n", av_err2str(ret));
+         if (i==1) {
+            if ((ret = sws_scale(*sws, (const uint8_t *const*)in,
+                  tmp_frame->linesize, slice_start, slice_height,
+                  (uint8_t * const*)conv_frame->data, conv_frame->linesize)) < 0)
+            {
+               log_cb(RETRO_LOG_ERROR, "[FFMPEG] Error while scaling image: %s\n", av_err2str(ret));
+            }
          }
 
          slice_start += slice_height;
@@ -1434,9 +1437,9 @@ static int16_t *decode_audio(AVCodecContext *ctx, AVPacket *pkt,
       AVFrame *frame, int16_t *buffer, size_t *buffer_cap,
       SwrContext *swr)
 {
-   int ret;
-   int64_t pts;
-   size_t required_buffer;
+   int ret = 0;
+   int64_t pts = 0;
+   size_t required_buffer = 0;
 
    if ((ret = avcodec_send_packet(ctx, pkt)) < 0)
    {
@@ -1867,7 +1870,7 @@ void CORE_PREFIX(retro_unload_game)(void)
 
 bool CORE_PREFIX(retro_load_game)(const struct retro_game_info *info)
 {
-   int ret;
+   int ret = 0;
    bool is_fft = false;
    enum retro_pixel_format fmt = RETRO_PIXEL_FORMAT_XRGB8888;
 
