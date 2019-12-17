@@ -1425,6 +1425,8 @@ static void decode_video(AVCodecContext *ctx, AVPacket *pkt, size_t frame_size)
          }
          tmp_frame = sw_frame;
          sw_frame = NULL;
+         /* the decoded hardware frame does not contain all information we need */
+         tmp_frame->best_effort_timestamp = frame->best_effort_timestamp;
       }
       else 
 #endif
