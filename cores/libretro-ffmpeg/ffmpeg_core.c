@@ -1274,22 +1274,36 @@ static void render_ass_img(AVFrame *conv_frame, ASS_Image *img)
 static void sws_worker_thread(void *arg)
 {
    int ret = 0;
+   int slice_num = 2;
+   int slice_start = 0;
+   int slice_height = ((((int) media.height) / slice_num) / 32) * 32;
+   int rest = ((int) media.height) - (slice_height * slice_num);
+   uint8_t *in[8];
    sws_context_t *ctx = (sws_context_t*) arg;
 
-   ctx->sws = sws_getCachedContext(ctx->sws,
-         media.width, media.height, ctx->source->format,
-         media.width, media.height, PIX_FMT_RGB32,
-         SWS_BICUBIC, NULL, NULL, NULL);
-
-   set_colorspace(ctx->sws, media.width, media.height,
-         av_frame_get_colorspace(ctx->source),
-         av_frame_get_color_range(ctx->source));
-
-   if ((ret = sws_scale(ctx->sws, (const uint8_t *const*)ctx->source->data,
-         ctx->source->linesize, 0, media.height,
-         (uint8_t * const*)ctx->target->data, ctx->target->linesize)) < 0)
+   for (int i = 0; i < slice_num; i++)
    {
-      log_cb(RETRO_LOG_ERROR, "[FFMPEG] Error while scaling image: %s\n", av_err2str(ret));
+      if (i == (slice_num-1))
+         slice_height += rest;
+
+      for (int j = 0; j<8; j++)
+         in[j] = ctx->source->data[j] + (slice_start * ctx->source->linesize[j]);
+
+      ctx->sws = sws_getCachedContext(ctx->sws,
+            media.width, media.height, ctx->source->format,
+            media.width, media.height, PIX_FMT_RGB32,
+            SWS_POINT, NULL, NULL, NULL);
+
+      set_colorspace(ctx->sws, media.width, media.height,
+            av_frame_get_colorspace(ctx->source),
+            av_frame_get_color_range(ctx->source));
+
+      if ((ret = sws_scale(ctx->sws, (const uint8_t *const *)in,
+            ctx->source->linesize, slice_start, slice_height,
+            (uint8_t *const *)ctx->target->data, ctx->target->linesize)) < 0)
+         log_cb(RETRO_LOG_ERROR, "[FFMPEG] Error while scaling image: %s\n", av_err2str(ret));
+
+      slice_start += slice_height;
    }
 
    swsbuffer_finish_slot(swsbuffer, ctx);
