@@ -280,7 +280,7 @@ void CORE_PREFIX(retro_set_environment)(retro_environment_t cb)
 {
    static const struct retro_variable vars[] = {
 #if LIBAVUTIL_VERSION_MAJOR > 55
-      { "ffmpeg_hw_decoder", "Use Hardware decoder (restart); off||auto"
+      { "ffmpeg_hw_decoder", "Use Hardware decoder (restart); off|auto|"
          "cuda|d3d11va|drm|dxva2|mediacodec|opencl|qsv|vaapi|vdpau|videotoolbox" },
 #endif
       { "ffmpeg_sw_decoder_threads", "Software decoder thread count (restart); auto|1|2|4|8|16" },
